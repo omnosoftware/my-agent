@@ -1,3 +1,5 @@
-const GEMINI_API_URL = 'https://api.example.com'; // Corrected API URL
+const geminiUrl = 'https://api.gemini.com/v1';
 
-module.exports = { GEMINI_API_URL };
+// Assume other necessary imports and code follow...
+
+// Your additional code here...
