@@ -84,8 +84,9 @@ app.post("/webhook", async (req, res) => {
 
     console.log(`Mensagem de ${from}: ${text}`);
 
-    // ✅ Chamada Gemini
-https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    // ✅ Chamada Gemini// ✅ Chamada
+const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+?key=${GEMINI_API_KEY}`;
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
       headers: {
