@@ -19,10 +19,7 @@ const {
 } = process.env;
 
 const GRAPH_API_VERSION = "v21.0";
-
-/* ==============================
-   🚨 Validação Inicial
-============================== */
+const GEMINI_MODEL = "gemini-1.5-flash"; // modelo mais leve
 
 if (!VERIFY_TOKEN || !GEMINI_API_KEY || !WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
   console.error("❌ Variáveis de ambiente faltando.");
@@ -38,7 +35,6 @@ async function sendWhatsAppMessage(to, text) {
 
   const payload = {
     messaging_product: "whatsapp",
-    recipient_type: "individual",
     to,
     type: "text",
     text: {
@@ -47,31 +43,36 @@ async function sendWhatsAppMessage(to, text) {
     },
   };
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  if (!response.ok) {
-    console.error("❌ Erro WhatsApp:", data);
-    throw new Error(`WhatsApp API error: ${response.status}`);
+    if (!response.ok) {
+      console.error("❌ Erro WhatsApp:", data);
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error("❌ Falha ao enviar mensagem:", err.message);
+    return false;
   }
-
-  return data;
 }
 
 /* ==============================
-   🤖 Chamada Gemini
+   🤖 Gemini
 ============================== */
 
 async function generateGeminiResponse(userText) {
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${GEMINI_API_KEY}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   const response = await fetch(geminiUrl, {
     method: "POST",
@@ -96,7 +97,7 @@ async function generateGeminiResponse(userText) {
 
   if (!response.ok) {
     console.error("❌ Erro Gemini:", data);
-    throw new Error("Falha na Gemini API");
+    throw new Error("GeminiError");
   }
 
   return (
@@ -115,7 +116,7 @@ app.get("/webhook", (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verificado com sucesso!");
+    console.log("✅ Webhook verificado!");
     return res.status(200).send(challenge);
   }
 
@@ -128,9 +129,7 @@ app.get("/webhook", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const message = change?.value?.messages?.[0];
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
     if (!message?.text?.body) {
       return res.sendStatus(200);
@@ -139,21 +138,32 @@ app.post("/webhook", async (req, res) => {
     const from = message.from;
     const userText = message.text.body;
 
-    console.log(`📩 Mensagem recebida de ${from}: ${userText}`);
+    console.log(`📩 ${from}: ${userText}`);
 
-    const reply = await generateGeminiResponse(userText);
+    let reply;
+
+    try {
+      reply = await generateGeminiResponse(userText);
+    } catch (err) {
+      console.log("⚠️ Usando fallback de resposta.");
+      reply =
+        "🤖 Estou temporariamente sem acesso à IA no momento. Tente novamente em instantes.";
+    }
 
     await sendWhatsAppMessage(from, reply);
 
+    // SEMPRE responder 200 para evitar retry da Meta
     return res.sendStatus(200);
   } catch (error) {
-    console.error("❌ Erro no webhook:", error.message);
-    return res.sendStatus(500);
+    console.error("❌ Erro geral no webhook:", error.message);
+
+    // Nunca retornar 500 para webhook
+    return res.sendStatus(200);
   }
 });
 
 /* ==============================
-   🚀 Inicialização do Servidor
+   🚀 Inicialização
 ============================== */
 
 app.listen(PORT, "0.0.0.0", () => {
