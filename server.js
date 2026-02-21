@@ -16,7 +16,7 @@ const {
   WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
   PORT = 3000,
-  GEMINI_MODEL = "gemini-1.5-flash"
+  GEMINI_MODEL = "gemini-2.5-flash"
 } = process.env;
 
 const GRAPH_API_VERSION = "v21.0";
