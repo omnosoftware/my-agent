@@ -19,7 +19,7 @@ const {
 } = process.env;
 
 const GRAPH_API_VERSION = "v21.0";
-const GEMINI_MODEL = "gemini-1.5-flash"; // modelo mais leve
+const GEMINI_MODEL = "gemini-2.5-flash"; // modelo mais leve
 
 if (!VERIFY_TOKEN || !GEMINI_API_KEY || !WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
   console.error("❌ Variáveis de ambiente faltando.");
