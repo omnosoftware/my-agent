@@ -16,15 +16,29 @@ const {
   WHATSAPP_TOKEN,
   PHONE_NUMBER_ID,
   PORT = 3000,
+  GEMINI_MODEL = "gemini-1.5-flash"
 } = process.env;
 
 const GRAPH_API_VERSION = "v21.0";
-const GEMINI_MODEL = "gemini-2.5-flash"; // modelo mais leve
 
 if (!VERIFY_TOKEN || !GEMINI_API_KEY || !WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
   console.error("❌ Variáveis de ambiente faltando.");
   process.exit(1);
 }
+
+/* ==============================
+   🛡️ Proteções em memória
+============================== */
+
+// Anti duplicação
+const processedMessages = new Set();
+
+// Rate limit simples por número
+const lastMessageTime = {};
+const MESSAGE_COOLDOWN = 4000; // 4 segundos
+
+// Bloqueio temporário quando quota estoura
+let geminiBlockedUntil = 0;
 
 /* ==============================
    📩 Enviar mensagem WhatsApp
@@ -33,16 +47,6 @@ if (!VERIFY_TOKEN || !GEMINI_API_KEY || !WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
 async function sendWhatsAppMessage(to, text) {
   const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${PHONE_NUMBER_ID}/messages`;
 
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: {
-      preview_url: false,
-      body: text,
-    },
-  };
-
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -50,13 +54,20 @@ async function sendWhatsAppMessage(to, text) {
         Authorization: `Bearer ${WHATSAPP_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          preview_url: false,
+          body: text,
+        },
+      }),
     });
 
-    const data = await response.json();
-
     if (!response.ok) {
-      console.error("❌ Erro WhatsApp:", data);
+      const err = await response.json();
+      console.error("❌ Erro WhatsApp:", err);
       return false;
     }
 
@@ -72,38 +83,63 @@ async function sendWhatsAppMessage(to, text) {
 ============================== */
 
 async function generateGeminiResponse(userText) {
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-
-  const response = await fetch(geminiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: userText }],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 300,
-      },
-    }),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    console.error("❌ Erro Gemini:", data);
-    throw new Error("GeminiError");
+  // Se bloqueado por 429 recente
+  if (Date.now() < geminiBlockedUntil) {
+    console.log("⛔ Gemini temporariamente bloqueado por quota.");
+    return null;
   }
 
-  return (
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-    "Desculpe, não consegui responder agora."
-  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  try {
+    console.log("🔎 Modelo usado:", GEMINI_MODEL);
+
+    const response = await fetch(geminiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userText }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 200,
+        },
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("❌ Erro Gemini:", data);
+
+      // Se for rate limit
+      if (response.status === 429) {
+        geminiBlockedUntil = Date.now() + 60000; // bloqueia por 1 minuto
+        console.log("🚫 Gemini bloqueado por 60s devido a quota.");
+      }
+
+      return null;
+    }
+
+    return (
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      null
+    );
+
+  } catch (err) {
+    console.error("❌ Falha Gemini:", err.message);
+    return null;
+  }
 }
 
 /* ==============================
@@ -135,29 +171,42 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
+    const messageId = message.id;
     const from = message.from;
-    const userText = message.text.body;
+    const userText = message.text.body.trim();
+
+    // 🔁 Anti duplicação
+    if (processedMessages.has(messageId)) {
+      return res.sendStatus(200);
+    }
+    processedMessages.add(messageId);
+
+    // ⏱ Rate limit simples
+    if (
+      lastMessageTime[from] &&
+      Date.now() - lastMessageTime[from] < MESSAGE_COOLDOWN
+    ) {
+      console.log("⚠️ Rate limit por número:", from);
+      return res.sendStatus(200);
+    }
+
+    lastMessageTime[from] = Date.now();
 
     console.log(`📩 ${from}: ${userText}`);
 
-    let reply;
+    let reply = await generateGeminiResponse(userText);
 
-    try {
-      reply = await generateGeminiResponse(userText);
-    } catch (err) {
-      console.log("⚠️ Usando fallback de resposta.");
+    if (!reply) {
       reply =
-        "🤖 Estou temporariamente sem acesso à IA no momento. Tente novamente em instantes.";
+        "🤖 Estou temporariamente com alto volume ou limite de uso. Tente novamente em instantes.";
     }
 
     await sendWhatsAppMessage(from, reply);
 
-    // SEMPRE responder 200 para evitar retry da Meta
     return res.sendStatus(200);
+
   } catch (error) {
     console.error("❌ Erro geral no webhook:", error.message);
-
-    // Nunca retornar 500 para webhook
     return res.sendStatus(200);
   }
 });
